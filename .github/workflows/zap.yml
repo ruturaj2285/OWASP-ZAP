@@ -44,53 +44,41 @@ jobs:
           aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
           kubectl get nodes
 
-      # 🐳 Build and push Flask app Docker image
       - name: Build & Push Flask Image to ECR
         if: env.BUILD_AND_PUSH == 'true'
         run: |
           set -e
           REPO_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}"
 
-          echo "Ensuring ECR repository exists..."
           aws ecr describe-repositories --repository-names "$REPO_NAME" --region "$AWS_REGION" >/dev/null 2>&1 || \
           aws ecr create-repository --repository-name "$REPO_NAME" --region "$AWS_REGION"
 
-          echo "Logging in to ECR..."
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)
           FULL_URI="${REPO_URI}:${IMAGE_TAG}"
 
-          echo "Building Docker image..."
           docker build -t "${FULL_URI}" ./src
-
-          echo "Pushing to ECR..."
           docker push "${FULL_URI}"
 
           echo "FULL_URI=${FULL_URI}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
-          echo "✅ Flask image pushed: ${FULL_URI}"
 
-      # 🧾 Update flask-deploy.yaml dynamically
       - name: Update flask-deploy.yaml with new image
         if: env.BUILD_AND_PUSH == 'true'
         run: |
           sed -i "s|image: .*|image: ${FULL_URI}|" k8s/flask-deploy.yaml
-          echo "✅ Updated flask-deploy.yaml with ${FULL_URI}"
 
-      # 🚀 Deploy Flask App to EKS
       - name: Deploy Flask App
         run: |
           kubectl get ns "$NAMESPACE" || kubectl create ns "$NAMESPACE"
           kubectl -n "$NAMESPACE" apply -f k8s/flask-deploy.yaml
           kubectl -n "$NAMESPACE" rollout status deploy/flask-app --timeout=5m
 
-      # 🧱 Ensure PVC for reports
       - name: Ensure PVC
         run: |
           kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
 
-      # 🧩 Deploy ZAP pod (optional)
       - name: Deploy persistent ZAP Pod
         if: env.USE_ZAP_POD == 'true'
         run: |
@@ -98,7 +86,6 @@ jobs:
           kubectl -n "$NAMESPACE" apply -f k8s/zap-service.yaml
           kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
 
-      # ⚔️ Run OWASP ZAP scan
       - name: Run ZAP scan
         run: |
           mkdir -p "$REPORT_DIR"
@@ -114,11 +101,11 @@ jobs:
             kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
           else
             JOB="zap-scan-$(date +%s)"
-            cat > /tmp/zap-job.yaml <<YAML
+            cat <<'EOF' > /tmp/zap-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: ${JOB}
+  name: ZAP_JOB_PLACEHOLDER
 spec:
   backoffLimit: 0
   template:
@@ -131,12 +118,16 @@ spec:
       containers:
       - name: zap
         image: ghcr.io/zaproxy/zaproxy:stable
-        command: ["${SCAN_CMD}"]
-        args: ["-t","${TARGET_URL}","-r","/zap/reports/report.html"]
+        command: ["ZAP_SCAN_CMD"]
+        args: ["-t","ZAP_TARGET_URL","-r","/zap/reports/report.html"]
         volumeMounts:
         - name: zap-report-storage
-          mountPath: /zap/reports 
-YAML
+          mountPath: /zap/reports
+EOF
+            sed -i "s/ZAP_JOB_PLACEHOLDER/${JOB}/g" /tmp/zap-job.yaml
+            sed -i "s|ZAP_SCAN_CMD|${SCAN_CMD}|g" /tmp/zap-job.yaml
+            sed -i "s|ZAP_TARGET_URL|${TARGET_URL}|g" /tmp/zap-job.yaml
+
             kubectl -n "$NAMESPACE" apply -f /tmp/zap-job.yaml
             kubectl -n "$NAMESPACE" wait --for=condition=complete job/${JOB} --timeout=25m || \
               (kubectl -n "$NAMESPACE" logs -l job-name=${JOB} && exit 1)
@@ -146,7 +137,6 @@ YAML
           fi
           ls -lh "$REPORT_DIR"
 
-      # 📦 Upload report artifact
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
         with:
