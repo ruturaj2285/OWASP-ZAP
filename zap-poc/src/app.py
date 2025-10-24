@@ -4,7 +4,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Hello from Flask app running on EKS!"
+    return "Hello from Flask app running on EKS 2285!"
 
 @app.route('/api/user')
 def user():
