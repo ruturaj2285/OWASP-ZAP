@@ -101,32 +101,27 @@ jobs:
             kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
           else
             JOB="zap-scan-$(date +%s)"
-            cat <<'EOF' > /tmp/zap-job.yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: ZAP_JOB_PLACEHOLDER
-spec:
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      volumes:
-      - name: zap-report-storage
-        persistentVolumeClaim:
-          claimName: zap-report-pvc
-      containers:
-      - name: zap
-        image: ghcr.io/zaproxy/zaproxy:stable
-        command: ["ZAP_SCAN_CMD"]
-        args: ["-t","ZAP_TARGET_URL","-r","/zap/reports/report.html"]
-        volumeMounts:
-        - name: zap-report-storage
-          mountPath: /zap/reports
-EOF
-            sed -i "s/ZAP_JOB_PLACEHOLDER/${JOB}/g" /tmp/zap-job.yaml
-            sed -i "s|ZAP_SCAN_CMD|${SCAN_CMD}|g" /tmp/zap-job.yaml
-            sed -i "s|ZAP_TARGET_URL|${TARGET_URL}|g" /tmp/zap-job.yaml
+            echo "apiVersion: batch/v1" > /tmp/zap-job.yaml
+            echo "kind: Job" >> /tmp/zap-job.yaml
+            echo "metadata:" >> /tmp/zap-job.yaml
+            echo "  name: ${JOB}" >> /tmp/zap-job.yaml
+            echo "spec:" >> /tmp/zap-job.yaml
+            echo "  backoffLimit: 0" >> /tmp/zap-job.yaml
+            echo "  template:" >> /tmp/zap-job.yaml
+            echo "    spec:" >> /tmp/zap-job.yaml
+            echo "      restartPolicy: Never" >> /tmp/zap-job.yaml
+            echo "      volumes:" >> /tmp/zap-job.yaml
+            echo "      - name: zap-report-storage" >> /tmp/zap-job.yaml
+            echo "        persistentVolumeClaim:" >> /tmp/zap-job.yaml
+            echo "          claimName: zap-report-pvc" >> /tmp/zap-job.yaml
+            echo "      containers:" >> /tmp/zap-job.yaml
+            echo "      - name: zap" >> /tmp/zap-job.yaml
+            echo "        image: ghcr.io/zaproxy/zaproxy:stable" >> /tmp/zap-job.yaml
+            echo "        command: [\"${SCAN_CMD}\"]" >> /tmp/zap-job.yaml
+            echo "        args: [\"-t\",\"${TARGET_URL}\",\"-r\",\"/zap/reports/report.html\"]" >> /tmp/zap-job.yaml
+            echo "        volumeMounts:" >> /tmp/zap-job.yaml
+            echo "        - name: zap-report-storage" >> /tmp/zap-job.yaml
+            echo "          mountPath: /zap/reports" >> /tmp/zap-job.yaml
 
             kubectl -n "$NAMESPACE" apply -f /tmp/zap-job.yaml
             kubectl -n "$NAMESPACE" wait --for=condition=complete job/${JOB} --timeout=25m || \
