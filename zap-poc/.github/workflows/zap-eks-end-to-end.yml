@@ -1,0 +1,143 @@
+name: OWASP ZAP on EKS (End-to-End)
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: "AWS region"
+        default: "ap-northeast-1"
+        required: true
+      eks_cluster:
+        description: "EKS cluster name"
+        default: "my-eks"
+        required: true
+      namespace:
+        description: "Namespace"
+        default: "zap-poc"
+        required: true
+      target_url:
+        description: "Internal service URL"
+        default: "http://flask-service:5000"
+        required: true
+      scan_type:
+        description: "Scan type (baseline or full)"
+        default: "baseline"
+        required: true
+      use_zap_pod:
+        description: "true = reuse running ZAP pod, false = ephemeral job"
+        default: "false"
+        required: true
+      deploy_flask:
+        description: "Deploy sample Flask demo app"
+        default: "true"
+        required: true
+
+jobs:
+  zap-eks:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      EKS_CLUSTER: ${{ inputs.eks_cluster }}
+      NAMESPACE: ${{ inputs.namespace }}
+      TARGET_URL: ${{ inputs.target_url }}
+      SCAN_TYPE: ${{ inputs.scan_type }}
+      USE_ZAP_POD: ${{ inputs.use_zap_pod }}
+      DEPLOY_FLASK: ${{ inputs.deploy_flask }}
+      REPORT_DIR: zap-report
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/<GITHUB_OIDC_ROLE>
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        run: |
+          curl -sSL -o kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+          kubectl get nodes
+
+      - name: Ensure namespace
+        run: |
+          kubectl get ns "$NAMESPACE" || kubectl create ns "$NAMESPACE"
+
+      - name: Deploy sample Flask app (optional)
+        if: env.DEPLOY_FLASK == 'true'
+        run: |
+          kubectl -n "$NAMESPACE" apply -f k8s/flask-deploy.yaml
+          kubectl -n "$NAMESPACE" rollout status deploy/flask-app --timeout=5m
+
+      - name: Ensure PVC
+        run: |
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
+
+      - name: Deploy persistent ZAP Pod (if enabled)
+        if: env.USE_ZAP_POD == 'true'
+        run: |
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-deploy.yaml
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-service.yaml
+          kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
+
+      - name: Run ZAP scan (Job or Pod)
+        run: |
+          mkdir -p "$REPORT_DIR"
+          if [ "$SCAN_TYPE" = "full" ]; then
+            SCAN_CMD="zap-full-scan.py"
+          else
+            SCAN_CMD="zap-baseline.py"
+          fi
+
+          if [ "$USE_ZAP_POD" = "true" ]; then
+            POD=$(kubectl -n "$NAMESPACE" get pods -l app=zap-server -o jsonpath='{.items[0].metadata.name}')
+            kubectl -n "$NAMESPACE" exec "$POD" -- $SCAN_CMD -t "$TARGET_URL" -r /zap/reports/report.html
+            kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
+          else
+            JOB="zap-scan-$(date +%s)"
+            cat > /tmp/job.yaml <<YAML
+            apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: ${JOB}
+            spec:
+              backoffLimit: 0
+              template:
+                spec:
+                  restartPolicy: Never
+                  volumes:
+                  - name: zap-report-storage
+                    persistentVolumeClaim:
+                      claimName: zap-report-pvc
+                  containers:
+                  - name: zap
+                    image: ghcr.io/zaproxy/zaproxy:stable
+                    command: ["${SCAN_CMD}"]
+                    args: ["-t","${TARGET_URL}","-r","/zap/reports/report.html"]
+                    volumeMounts:
+                    - name: zap-report-storage
+                      mountPath: /zap/reports
+            YAML
+            kubectl -n "$NAMESPACE" apply -f /tmp/job.yaml
+            kubectl -n "$NAMESPACE" wait --for=condition=complete job/${JOB} --timeout=25m || \
+              (kubectl -n "$NAMESPACE" logs -l job-name=${JOB} && exit 1)
+            POD=$(kubectl -n "$NAMESPACE" get pods -l job-name=${JOB} -o jsonpath='{.items[0].metadata.name}')
+            kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
+            kubectl -n "$NAMESPACE" delete job ${JOB} --ignore-not-found=true
+          fi
+          ls -lh "$REPORT_DIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: ${{ env.REPORT_DIR }}/report.html
+
