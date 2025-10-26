@@ -50,7 +50,7 @@ jobs:
           cd zap-poc
           kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$NAMESPACE" apply -f k8s/flask-deploy.yaml
-          #kubectl -n "$NAMESPACE" rollout status deploy/flask-service --timeout=5m
+          # kubectl -n "$NAMESPACE" rollout status deploy/flask-service --timeout=5m
    
 
       - name: Deploy ZAP pod & service
