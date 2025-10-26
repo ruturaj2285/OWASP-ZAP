@@ -1,139 +1,67 @@
-name: OWASP ZAP on EKS (End-to-End)
+name: Build and Deploy Python Metrics Demo
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  IMAGE_REPO: python-metrics-demo
 
 jobs:
-  zap-eks:
+  checkout:
     runs-on: self-hosted
-
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
-      NAMESPACE: zap-poc
-      TARGET_URL: http://flask-service:5000
-      SCAN_TYPE: baseline
-      USE_ZAP_POD: false
-      BUILD_AND_PUSH: true
-      REPORT_DIR: zap-report
-      REPO_NAME: zap-flask-demo
-
     steps:
-      - name: Checkout source
+      - name: Checkout code
         uses: actions/checkout@v4
 
+  configure-aws:
+    runs-on: self-hosted
+    needs: checkout
+    steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
 
-      - name: Install tools (kubectl, docker, jq)
+  build-and-push:
+    runs-on: self-hosted
+    needs: configure-aws
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-          curl -sSL -o kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+          cd python-metrics-demo/app
+          aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com
+          docker build -t python-metrics-demo .
+          docker tag python-metrics-demo:latest 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com/python-metrics-demo:latest
+          docker push 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com/python-metrics-demo:latest
+
+  setup-k8s:
+    runs-on: self-hosted
+    needs: build-and-push
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
 
       - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ secrets.AWS_REGION1 }}
+
+      - name: Create namespaces
         run: |
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
-          kubectl get nodes
-
-      - name: Build & Push Flask Image to ECR
-        if: env.BUILD_AND_PUSH == 'true'
-        run: |
-          set -e
-          REPO_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO_NAME}"
-
-          aws ecr describe-repositories --repository-names "$REPO_NAME" --region "$AWS_REGION" >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name "$REPO_NAME" --region "$AWS_REGION"
-
-          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-          IMAGE_TAG=$(date +%Y%m%d%H%M%S)
-          FULL_URI="${REPO_URI}:${IMAGE_TAG}"
-
-          docker build -t "${FULL_URI}" ./src
-          docker push "${FULL_URI}"
-
-          echo "FULL_URI=${FULL_URI}" >> $GITHUB_ENV
-          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
-
-      - name: Update flask-deploy.yaml with new image
-        if: env.BUILD_AND_PUSH == 'true'
-        run: |
-          sed -i "s|image: .*|image: ${FULL_URI}|" k8s/flask-deploy.yaml
-
-      - name: Deploy Flask App
-        run: |
-          kubectl get ns "$NAMESPACE" || kubectl create ns "$NAMESPACE"
-          kubectl -n "$NAMESPACE" apply -f k8s/flask-deploy.yaml
-          kubectl -n "$NAMESPACE" rollout status deploy/flask-app --timeout=5m
-
-      - name: Ensure PVC
-        run: |
-          kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
-
-      - name: Deploy persistent ZAP Pod
-        if: env.USE_ZAP_POD == 'true'
-        run: |
-          kubectl -n "$NAMESPACE" apply -f k8s/zap-deploy.yaml
-          kubectl -n "$NAMESPACE" apply -f k8s/zap-service.yaml
-          kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
-
-      - name: Run ZAP scan
-        run: |
-          mkdir -p "$REPORT_DIR"
-          if [ "$SCAN_TYPE" = "full" ]; then
-            SCAN_CMD="zap-full-scan.py"
-          else
-            SCAN_CMD="zap-baseline.py"
-          fi
-
-          if [ "$USE_ZAP_POD" = "true" ]; then
-            POD=$(kubectl -n "$NAMESPACE" get pods -l app=zap-server -o jsonpath='{.items[0].metadata.name}')
-            kubectl -n "$NAMESPACE" exec "$POD" -- $SCAN_CMD -t "$TARGET_URL" -r /zap/reports/report.html
-            kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
-          else
-            JOB="zap-scan-$(date +%s)"
-            echo "apiVersion: batch/v1" > /tmp/zap-job.yaml
-            echo "kind: Job" >> /tmp/zap-job.yaml
-            echo "metadata:" >> /tmp/zap-job.yaml
-            echo "  name: ${JOB}" >> /tmp/zap-job.yaml
-            echo "spec:" >> /tmp/zap-job.yaml
-            echo "  backoffLimit: 0" >> /tmp/zap-job.yaml
-            echo "  template:" >> /tmp/zap-job.yaml
-            echo "    spec:" >> /tmp/zap-job.yaml
-            echo "      restartPolicy: Never" >> /tmp/zap-job.yaml
-            echo "      volumes:" >> /tmp/zap-job.yaml
-            echo "      - name: zap-report-storage" >> /tmp/zap-job.yaml
-            echo "        persistentVolumeClaim:" >> /tmp/zap-job.yaml
-            echo "          claimName: zap-report-pvc" >> /tmp/zap-job.yaml
-            echo "      containers:" >> /tmp/zap-job.yaml
-            echo "      - name: zap" >> /tmp/zap-job.yaml
-            echo "        image: ghcr.io/zaproxy/zaproxy:stable" >> /tmp/zap-job.yaml
-            echo "        command: [\"${SCAN_CMD}\"]" >> /tmp/zap-job.yaml
-            echo "        args: [\"-t\",\"${TARGET_URL}\",\"-r\",\"/zap/reports/report.html\"]" >> /tmp/zap-job.yaml
-            echo "        volumeMounts:" >> /tmp/zap-job.yaml
-            echo "        - name: zap-report-storage" >> /tmp/zap-job.yaml
-            echo "          mountPath: /zap/reports" >> /tmp/zap-job.yaml
-
-            kubectl -n "$NAMESPACE" apply -f /tmp/zap-job.yaml
-            kubectl -n "$NAMESPACE" wait --for=condition=complete job/${JOB} --timeout=25m || \
-              (kubectl -n "$NAMESPACE" logs -l job-name=${JOB} && exit 1)
-            POD=$(kubectl -n "$NAMESPACE" get pods -l job-name=${JOB} -o jsonpath='{.items[0].metadata.name}')
-            kubectl -n "$NAMESPACE" cp "$POD":/zap/reports/report.html "$REPORT_DIR/report.html"
-            kubectl -n "$NAMESPACE" delete job ${JOB} --ignore-not-found=true
-          fi
-          ls -lh "$REPORT_DIR"
-
-      - name: Upload ZAP report
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-report
-          path: ${{ env.REPORT_DIR }}/report.html
+          kubectl create ns demo2285 --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create ns monitoring2285 --dry-run=client -o yaml | kubectl apply -f -
