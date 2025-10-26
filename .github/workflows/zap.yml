@@ -31,15 +31,13 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install kubectl if missing
-        run: |
-          if ! command -v kubectl >/dev/null; then
-            echo "Installing kubectl..."
-            curl -sLO "https://dl.k8s.io/release/$(curl -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-            chmod +x kubectl
-            sudo mv kubectl /usr/local/bin/
-          fi
-          kubectl version --client --short
+      # - name: Install kubectl
+      #   run: |
+      #     sudo rm -f /usr/local/bin/kubectl
+      #     curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      #     chmod +x kubectl
+      #     sudo mv kubectl /usr/local/bin/
+      #     kubectl version --client
 
 
       - name: Configure EKS access
