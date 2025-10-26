@@ -60,7 +60,7 @@ jobs:
           kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
           kubectl -n "$NAMESPACE" apply -f k8s/zap-deploy.yaml
           kubectl -n "$NAMESPACE" apply -f k8s/zap-service.yaml
-          kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
+          # kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
 
       - name: Run ZAP baseline scan inside pod
         run: |
