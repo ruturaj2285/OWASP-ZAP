@@ -14,7 +14,7 @@ jobs:
       ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
       EKS_CLUSTER: ${{ secrets.EKS_CLUSTER_NAME }}
       NAMESPACE: zap-poc
-      TARGET_URL: http://flask-service:5000
+      TARGET_URL: http://a7ae923e8edd143148552851c78dd46c-1655064815.ap-northeast-1.elb.amazonaws.com:5000
       REPORT_FILE: report.html
       REPORT_DIR: /zap/reports
       REPORT_PORT: 8090
