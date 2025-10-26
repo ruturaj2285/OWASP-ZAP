@@ -12,6 +12,8 @@ spec:
       labels:
         app: zap-server
     spec:
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: zap
         image: ghcr.io/zaproxy/zaproxy:stable
