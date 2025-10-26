@@ -12,7 +12,7 @@ jobs:
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER_NAME }}
       NAMESPACE: zap-poc
       TARGET_URL: http://flask-service:5000
       REPORT_FILE: report.html
@@ -38,7 +38,7 @@ jobs:
 
       - name: Configure EKS access
         run: |
-          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+          aws eks update-kubeconfig --region "${{ secrets.AWS_REGION1 }}" --name "${{ secrets.EKS_CLUSTER_NAME }}"
           kubectl get nodes
 
       - name: Deploy ZAP pod & service
