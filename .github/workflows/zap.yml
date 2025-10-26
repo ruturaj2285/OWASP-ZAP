@@ -46,6 +46,7 @@ jobs:
 
       - name: Deploy ZAP pod & service
         run: |
+          cd zap-poc
           kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
           kubectl -n "$NAMESPACE" apply -f k8s/zap-deploy.yaml
