@@ -33,7 +33,7 @@ jobs:
 
       - name: Install kubectl
         run: |
-          sudo rm -f /usr/local/bin/kubectl
+          #sudo rm -f /usr/local/bin/kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
