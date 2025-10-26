@@ -26,6 +26,8 @@ spec:
         volumeMounts:
           - name: zap-report-storage
             mountPath: /zap/reports
+          - name: zap-workdir              # 👈 Add this mount
+            mountPath: /zap/wrk            # 👈 Required by zap-baseline.py
         command: ["/bin/sh","-c"]
         args:
           - >
@@ -38,4 +40,6 @@ spec:
         - name: zap-report-storage
           persistentVolumeClaim:
             claimName: zap-report-pvc
+        - name: zap-workdir                # 👈 Add this volume
+          emptyDir: {}                     # 👈 Temporary working dir
 
