@@ -42,7 +42,15 @@ jobs:
       - name: Configure EKS access
         run: |
           aws eks update-kubeconfig  --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "${{ secrets.AWS_REGION1 }}"
-          kubectl get nodes
+          kubectl get nodes 
+          
+      - name: Deploy Flask app
+        run: |
+          cd zap-poc
+          kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NAMESPACE" apply -f k8s/flask-deploy.yaml
+          #kubectl -n "$NAMESPACE" rollout status deploy/flask-service --timeout=5m
+   
 
       - name: Deploy ZAP pod & service
         run: |
