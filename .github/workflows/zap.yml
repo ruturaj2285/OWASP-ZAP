@@ -1,67 +1,66 @@
-name: Build and Deploy Python Metrics Demo
+name: OWASP ZAP Baseline on EKS
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
-
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-  IMAGE_REPO: python-metrics-demo
+    branches:
+      - main
 
 jobs:
-  checkout:
+  zap-baseline:
     runs-on: self-hosted
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      EKS_CLUSTER: ${{ secrets.EKS_CLUSTER }}
+      NAMESPACE: zap-poc
+      TARGET_URL: http://flask-service:5000
+      REPORT_FILE: report.html
+      REPORT_DIR: /zap/reports
+      REPORT_PORT: 8090
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-  configure-aws:
-    runs-on: self-hosted
-    #needs: checkout
-    steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-  build-and-push:
-    runs-on: self-hosted
-    #needs: configure-aws
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push Docker image
+      - name: Install kubectl
         run: |
-          cd python-metrics-demo/app
-          aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com
-          docker build -t python-metrics-demo .
-          docker tag python-metrics-demo:latest 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com/python-metrics-demo:latest
-          docker push 227295996532.dkr.ecr.ap-northeast-1.amazonaws.com/python-metrics-demo:latest
+          curl -sS -o kubectl https://amazon-eks.s3.amazonaws.com/1.30.0/2024-06-11/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
 
-  setup-k8s:
-    runs-on: self-hosted
-    #needs: build-and-push
-    steps:
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-
-      - name: Setup Helm
-        uses: azure/setup-helm@v3
-
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ secrets.AWS_REGION1 }}
-
-      - name: Create namespaces
+      - name: Configure EKS access
         run: |
-          kubectl create ns demo2285 --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create ns monitoring2285 --dry-run=client -o yaml | kubectl apply -f -
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+          kubectl get nodes
+
+      - name: Deploy ZAP pod & service
+        run: |
+          kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-pvc.yaml
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-deploy.yaml
+          kubectl -n "$NAMESPACE" apply -f k8s/zap-service.yaml
+          kubectl -n "$NAMESPACE" rollout status deploy/zap-server --timeout=8m
+
+      - name: Run ZAP baseline scan inside pod
+        run: |
+          POD=$(kubectl -n "$NAMESPACE" get pod -l app=zap-server -o jsonpath='{.items[0].metadata.name}')
+          echo "Running scan inside pod: $POD"
+          kubectl -n "$NAMESPACE" exec "$POD" -- bash -c \
+            "zap-baseline.py -t $TARGET_URL -r $REPORT_DIR/$REPORT_FILE"
+
+      - name: Print ZAP report URL
+        run: |
+          NODE_PORT=$(kubectl -n "$NAMESPACE" get svc zap-report-service -o jsonpath='{.spec.ports[0].nodePort}')
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+          echo "--------------------------------------------"
+          echo "✅ ZAP Scan Completed!"
+          echo "View report at: http://$NODE_IP:$NODE_PORT/$REPORT_FILE"
+          echo "--------------------------------------------"
